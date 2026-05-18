@@ -14,7 +14,7 @@ Consumers must declare this plugin as a direct dependency and request `pluginApi
   "dependencies": [
     {
       "uuid": "@aspen/netease-music-link-essentials",
-      "minVersion": "1.0.0"
+      "minVersion": "1.0.1"
     }
   ]
 }
