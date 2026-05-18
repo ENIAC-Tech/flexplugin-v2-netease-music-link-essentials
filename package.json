@@ -1,0 +1,24 @@
+{
+  "name": "neteasemusiclinkessentials",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reusable FlexLink communication essentials for Netease Cloud Music plugins.",
+  "scripts": {
+    "build": "flexcli plugin-v2 build",
+    "dev": "flexcli plugin-v2 dev .",
+    "pack": "flexcli plugin-v2 pack --platform win32-x64",
+    "sync:plugin-skill-docs": "node scripts/sync-plugin-skill-docs.mjs",
+    "sync:plugin-skill-docs:check": "node scripts/sync-plugin-skill-docs.mjs --check"
+  },
+  "dependencies": {
+    "@flexsdk/runtime": "file:./vendor/flexsdk-runtime-2.1.1.tgz",
+    "@flexsdk/types": "file:./vendor/flexsdk-types-2.1.1.tgz",
+    "ws": "^8.20.1"
+  },
+  "devDependencies": {
+    "@eniac/flexcli": "file:./vendor/eniac-flexcli-2.0.0.tgz",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "vue": "^3.4.0"
+  }
+}

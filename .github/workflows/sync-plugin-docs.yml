@@ -1,0 +1,75 @@
+name: Sync Plugin Docs Snapshot
+
+on:
+  repository_dispatch:
+    types: [plugin-docs-updated]
+  workflow_dispatch:
+    inputs:
+      docs_ref:
+        description: "FlexStudioDocumentation ref to sync"
+        required: false
+        default: "main"
+  schedule:
+    - cron: "0 2 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-plugin-docs
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout plugin template
+        uses: actions/checkout@v4
+
+      - name: Resolve docs ref
+        id: docs-ref
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.event.client_payload.ref }}
+          INPUT_REF: ${{ inputs.docs_ref }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ] && [ -n "$EVENT_REF" ]; then
+            echo "ref=$EVENT_REF" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_REF" ]; then
+            echo "ref=$INPUT_REF" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout FlexStudioDocumentation
+        uses: actions/checkout@v4
+        with:
+          repository: ENIAC-Tech/FlexStudioDocumentation
+          ref: ${{ steps.docs-ref.outputs.ref }}
+          path: .tmp/FlexStudioDocumentation
+          token: ${{ secrets.FLEX_DOCS_PAT || github.token }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Sync bundled docs
+        run: node scripts/sync-plugin-skill-docs.mjs --docs-root .tmp/FlexStudioDocumentation/docs/zh/sdk/plugin-development
+
+      - name: Verify generated docs
+        run: node scripts/sync-plugin-skill-docs.mjs --docs-root .tmp/FlexStudioDocumentation/docs/zh/sdk/plugin-development --check
+
+      - name: Open sync pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "docs: sync plugin documentation snapshot"
+          title: "docs: sync plugin documentation snapshot"
+          body: |
+            Syncs the bundled FlexStudio plugin documentation snapshot used by the local agent skill.
+
+            Source ref: `${{ steps.docs-ref.outputs.ref }}`
+          branch: chore/sync-plugin-docs
+          delete-branch: true

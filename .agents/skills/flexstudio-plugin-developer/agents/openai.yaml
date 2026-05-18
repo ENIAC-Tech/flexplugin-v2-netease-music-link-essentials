@@ -1,0 +1,7 @@
+interface:
+  display_name: "FlexStudio Plugin Developer"
+  short_description: "Build, debug, and migrate FlexStudio v2 plugins"
+  default_prompt: "Use $flexstudio-plugin-developer to work on this FlexStudio plugin."
+
+policy:
+  allow_implicit_invocation: true

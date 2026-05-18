@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "1.0",
+  "uuid": "@aspen/netease-music-link-essentials",
+  "name": "NeteaseMusicLinkEssentials",
+  "version": "1.0.0",
+  "repo": "https://github.com/ENIAC-Tech/flexplugin-v2-netease-music-link-essentials",
+  "description": "Reusable FlexLink communication essentials for Netease Cloud Music plugins.",
+  "author": {
+    "name": "Aspen"
+  },
+  "minHostVersion": "1.0.0",
+  "native": false,
+  "platforms": [
+    "win32-x64"
+  ],
+  "devices": [
+    "flow2pro",
+    "flexbar",
+    "flex2"
+  ],
+  "requiredCapabilities": [],
+  "permissions": [
+    "logger",
+    "file",
+    "system"
+  ],
+  "dependencies": [],
+  "hasConfigPage": false,
+  "entry": {
+    "backend": "src/backend/index.js"
+  },
+  "defaultLocale": "en",
+  "supportedLocales": [
+    "en"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "sourceRepo": "FlexStudioDocumentation",
+  "sourcePath": "docs/zh/sdk/plugin-development",
+  "sourceCommit": "5beb2b878cb40e6bcb9878f952249dd7ce78167d-dirty",
+  "docsLanguage": "zh-CN",
+  "generatedBy": "scripts/sync-plugin-skill-docs.mjs",
+  "files": [
+    "index.md",
+    "overview.md",
+    "getting-started.md",
+    "project-structure.md",
+    "manifest.md",
+    "unit-definitions.md",
+    "backend-runtime.md",
+    "frontend-bridge.md",
+    "host-api-reference.md",
+    "dependency-api.md",
+    "cli-reference.md",
+    "marketplace-release.md",
+    "troubleshooting.md"
+  ]
+}
