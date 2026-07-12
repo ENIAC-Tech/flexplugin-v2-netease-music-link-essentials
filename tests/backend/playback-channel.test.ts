@@ -47,22 +47,41 @@ describe('playback dependency state channel', () => {
     expect(x.methods).toEqual(expect.arrayContaining(['getPlaybackState','sendPlayerCommand','getConnectionStatus','installFlexLinkPlugin','openExternalUrl','reportDiagnostic']));
   });
 
-  it('publishes complete compact snapshots for connection and every handled update', async () => {
-    const x = setup(); await x.load(); const ws = sockets[0]; ws.readyState = 1; ws.emit('open');
-    const messages = [
-      ['FullState', { song: { songName: 'A', authorName: 'B', originalCoverUrl: 'https://x/c.jpg', cover: { type: 'Base64', value: 'secret' }, coverBase64: 'secret', extra: 'x'.repeat(70000) }, playState: 'Playing', timeline: { currentTime: 1, totalTime: 2 }, playMode: { isShuffling: true, repeatMode: 'All' }, lyrics: { lines: [{ originalLyric: 'all' }] }, currentLyric: { line: { originalLyric: 'now' } } }],
-      ['Metadata', { songName: 'M' }], ['SongUpdate', { songName: 'S' }], ['PlayState', 'Paused'], ['Timeline', { currentTime: 3, totalTime: 4 }], ['PlayMode', { isShuffling: false, repeatMode: 'One' }], ['CurrentLyricUpdate', { line: { originalLyric: 'line' } }]
+  it('maps every handled FlexLink message to the exact latest compact snapshot', async () => {
+    const x = setup(); await x.load(); const ws = sockets[0]; x.publish.mockClear();
+    const expected: any = {
+      connected: true, connectionError: null, song: null, playState: 'Stopped',
+      timeline: { currentTime: 0, totalTime: 0 },
+      playMode: { isShuffling: false, repeatMode: 'Off' }, currentLyric: null
+    };
+    const cases: Array<[string, unknown, Partial<typeof expected>]> = [
+      ['FullState', { song: { songName: 'A', authorName: 'B', originalCoverUrl: 'https://x/c.jpg', cover: { type: 'Base64', value: 'secret' }, coverBase64: 'secret', extra: 'x'.repeat(70000) }, playState: 'Playing', timeline: { currentTime: 1, totalTime: 2 }, playMode: { isShuffling: true, repeatMode: 'All' }, lyrics: { lines: [{ originalLyric: 'all' }] }, currentLyric: { line: { originalLyric: 'now' } } }, { song: { songName: 'A', authorName: 'B', originalCoverUrl: 'https://x/c.jpg' }, playState: 'Playing', timeline: { currentTime: 1, totalTime: 2 }, playMode: { isShuffling: true, repeatMode: 'All' }, currentLyric: { line: { originalLyric: 'now' } } }],
+      ['Metadata', { songName: 'M' }, { song: { songName: 'M' } }],
+      ['SongUpdate', { songName: 'S' }, { song: { songName: 'S' } }],
+      ['PlayState', 'Paused', { playState: 'Paused' }],
+      ['PlayStateUpdate', { status: 'Playing' }, { playState: 'Playing' }],
+      ['Timeline', { currentTime: 3, totalTime: 4 }, { timeline: { currentTime: 3, totalTime: 4 } }],
+      ['TimelineUpdate', { currentTime: 5, totalTime: 6 }, { timeline: { currentTime: 5, totalTime: 6 } }],
+      ['PlayMode', { isShuffling: false, repeatMode: 'One' }, { playMode: { isShuffling: false, repeatMode: 'One' } }],
+      ['PlayModeUpdate', { isShuffling: true, repeatMode: 'All' }, { playMode: { isShuffling: true, repeatMode: 'All' } }],
+      ['CurrentLyricUpdate', { line: { originalLyric: 'line' } }, { currentLyric: { line: { originalLyric: 'line' } } }],
+      ['UpdateCurrentLyric', { line: { originalLyric: 'next' } }, { currentLyric: { line: { originalLyric: 'next' } } }]
     ];
-    for (const [type, data] of messages) ws.emit('message', JSON.stringify({ type, data }));
-    ws.emit('error', new Error('boom')); ws.emit('close'); await tick();
-    const payloads = x.publish.mock.calls.map((c) => c[1].payload);
-    expect(payloads.some((p) => p.connected && p.playState === 'Playing')).toBe(true);
-    expect(payloads.some((p) => p.connectionError === 'boom')).toBe(true);
-    for (const p of payloads) { const wire = JSON.stringify(p); expect(Buffer.byteLength(wire)).toBeLessThanOrEqual(64 * 1024); expect(wire).not.toContain('secret'); expect(p).not.toHaveProperty('lyrics'); }
+    for (const [type, data, change] of cases) {
+      Object.assign(expected, change);
+      ws.emit('message', JSON.stringify({ type, data })); await tick();
+      const payload = x.publish.mock.calls[x.publish.mock.calls.length - 1][1].payload;
+      expect(payload).toEqual({ ...expected, lastUpdatedAt: expect.any(Number) });
+      const wire = JSON.stringify(payload);
+      expect(Buffer.byteLength(wire, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+      expect(wire).not.toContain('secret'); expect(payload).not.toHaveProperty('lyrics');
+    }
   });
 
-  it('does not publish lyrics-only changes', async () => {
-    const x = setup(); await x.load(); x.publish.mockClear(); sockets[0].emit('message', JSON.stringify({ type: 'LyricUpdate', data: { lines: [{ originalLyric: 'hidden' }] } })); await tick();
+  it.each(['LyricUpdate', 'UpdateLyric'])('%s updates internal lyrics without compact publication', async (type) => {
+    const x = setup(); await x.load(); x.publish.mockClear();
+    sockets[0].emit('message', JSON.stringify({ type, data: { lines: [{ originalLyric: 'hidden' }] } })); await tick();
+    expect((x.plugin as any).state.lyrics).toEqual({ lines: [{ originalLyric: 'hidden' }] });
     expect(x.publish).not.toHaveBeenCalled();
   });
 
@@ -71,7 +90,24 @@ describe('playback dependency state channel', () => {
     const publish = jest.fn(() => new Promise<void>((resolve, reject) => gates.push({ resolve, reject })));
     const x = setup(publish); const loading = x.load(); await tick(); expect(publish).toHaveBeenCalledTimes(1); gates[0].resolve(); await loading; await tick();
     const ws = sockets[0]; ws.emit('message', JSON.stringify({ type: 'PlayState', data: 'Playing' })); ws.emit('message', JSON.stringify({ type: 'PlayState', data: 'Paused' })); await tick(); expect(publish).toHaveBeenCalledTimes(2);
-    gates[1].reject(new Error('no')); await tick(); expect(publish).toHaveBeenCalledTimes(3); gates[2].resolve(); await tick(); expect(x.logger.warn).toHaveBeenCalled();
+    expect((publish.mock.calls as any)[1][1].payload.playState).toBe('Playing');
+    gates[1].reject(new Error('no')); await tick(); expect(publish).toHaveBeenCalledTimes(3);
+    expect((publish.mock.calls as any)[2][1].payload.playState).toBe('Paused');
+    gates[2].resolve(); await tick(); expect(x.logger.warn).toHaveBeenCalled();
+  });
+
+  it('drains queued publication and prevents socket callbacks from publishing after unload', async () => {
+    let release!: () => void;
+    const publish = jest.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    const x = setup(publish); await x.load(); const ws = sockets[0];
+    ws.emit('message', JSON.stringify({ type: 'PlayState', data: 'Playing' })); await tick();
+    let unloaded = false; const unloading = x.plugin.onUnload().then(() => { unloaded = true; }); await tick();
+    expect(unloaded).toBe(false);
+    ws.emit('message', JSON.stringify({ type: 'PlayState', data: 'Paused' })); await tick();
+    release(); await unloading; await tick();
+    expect(publish).toHaveBeenCalledTimes(2);
   });
 
   it('publishes a complete snapshot whenever a connection reopens', async () => {

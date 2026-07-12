@@ -91,6 +91,7 @@ export default class NeteaseMusicLinkEssentialsPlugin extends FlexPluginBase {
 
   async onUnload(): Promise<void> {
     this.unloaded = true;
+    const pendingPublications = this.publicationQueue;
     this.unregisterDependencyApis();
     this.clearReconnectTimer();
     if (this.ws) {
@@ -102,6 +103,9 @@ export default class NeteaseMusicLinkEssentialsPlugin extends FlexPluginBase {
       }
       this.ws = null;
     }
+    await pendingPublications.catch((error) => {
+      this.logger.warn('Failed to drain Netease playback publications during unload', { error: String(error) });
+    });
     await super.onUnload();
   }
 
@@ -359,6 +363,7 @@ export default class NeteaseMusicLinkEssentialsPlugin extends FlexPluginBase {
   }
 
   private queuePlaybackSnapshot(): Promise<void> {
+    if (this.unloaded) return this.publicationQueue;
     const payload = this.createBoundedPlaybackChannelState();
     const publish = async () => {
       try {
