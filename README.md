@@ -22,7 +22,7 @@ Consumers must declare this plugin as a direct dependency and request `pluginApi
 
 ## Playback Dependency State Channel
 
-Consumers subscribe to the retained `playback` Dependency State Channel with `replayLatest: true`. The provider publishes compact snapshots after FlexLink connection and playback events. The payload is `NeteasePlaybackChannelState`: connection status/error, compact song metadata with bounded HTTP(S) cover URLs, play state, timeline, play mode, the current/next lyric excerpt, and `lastUpdatedAt`.
+Consumers subscribe to the retained `playback` Dependency State Channel with `replayLatest: true`. The provider publishes compact snapshots after FlexLink connection and playback events. The payload is `NeteasePlaybackChannelState`: connection status/error, compact song metadata with HTTP(S)-only cover URLs, play state, timeline, play mode, the current lyric, and `lastUpdatedAt`. The complete compact payload is bounded by the 64 KiB State Channel limit.
 
 The channel deliberately excludes the full lyrics collection and base64 cover data so it remains below the 64 KiB State Channel limit. Consumers must not poll playback state. `getPlaybackState` remains available only as an explicit diagnostic snapshot; it is not the live state transport.
 
