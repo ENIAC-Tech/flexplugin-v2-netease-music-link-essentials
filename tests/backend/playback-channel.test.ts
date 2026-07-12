@@ -118,6 +118,34 @@ describe('playback dependency state channel', () => {
     expect(snapshots[snapshots.length - 1]).toEqual(expect.objectContaining({ connected: true, playState: 'Playing', timeline: expect.any(Object), playMode: expect.any(Object) }));
   });
 
+  it('publishes exact complete snapshots for open, error, and close socket events', async () => {
+    const x = setup(); await x.load(); const ws = sockets[0]; x.publish.mockClear();
+    const complete = {
+      song: null,
+      playState: 'Stopped',
+      timeline: { currentTime: 0, totalTime: 0 },
+      playMode: { isShuffling: false, repeatMode: 'Off' },
+      currentLyric: null,
+      lastUpdatedAt: expect.any(Number)
+    };
+
+    ws.readyState = 1; ws.emit('open'); await tick();
+    expect(x.publish.mock.calls[0][1].payload).toEqual({
+      ...complete, connected: true, connectionError: null
+    });
+
+    ws.emit('error', new Error('boom')); await tick();
+    expect(x.publish.mock.calls[1][1].payload).toEqual({
+      ...complete, connected: false, connectionError: 'boom'
+    });
+
+    ws.emit('close'); await tick();
+    expect(x.publish.mock.calls[2][1].payload).toEqual({
+      ...complete, connected: false, connectionError: 'boom'
+    });
+    expect(x.publish).toHaveBeenCalledTimes(3);
+  });
+
   it('fails closed instead of publishing an oversized UTF-8 snapshot', async () => {
     const x = setup(); await x.load(); x.publish.mockClear();
     sockets[0].emit('message', JSON.stringify({ type: 'CurrentLyricUpdate', data: { line: { originalLyric: '歌'.repeat(30000) } } }));
