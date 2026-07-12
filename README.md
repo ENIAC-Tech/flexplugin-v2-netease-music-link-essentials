@@ -2,7 +2,7 @@
 
 Reusable FlexLink communication essentials for FlexStudio Netease Cloud Music plugins.
 
-This plugin exposes a backend dependency API for playback state, player controls, lyrics, cover data, BetterNCM FlexLink installation, and diagnostics. It is Windows-only and does not register user-facing Units by itself.
+This plugin exposes an event-driven playback channel plus dependency RPCs for diagnostics, player controls, BetterNCM FlexLink installation, and utilities. It is Windows-only and does not register user-facing Units by itself.
 
 ## Consumer Manifest
 
@@ -20,12 +20,18 @@ Consumers must declare this plugin as a direct dependency and request `pluginApi
 }
 ```
 
-## API
+## Playback Dependency State Channel
+
+Consumers subscribe to the retained `playback` Dependency State Channel with `replayLatest: true`. The provider publishes compact snapshots after FlexLink connection and playback events. The payload is `NeteasePlaybackChannelState`: connection status/error, compact song metadata with bounded HTTP(S) cover URLs, play state, timeline, play mode, the current/next lyric excerpt, and `lastUpdatedAt`.
+
+The channel deliberately excludes the full lyrics collection and base64 cover data so it remains below the 64 KiB State Channel limit. Consumers must not poll playback state. `getPlaybackState` remains available only as an explicit diagnostic snapshot; it is not the live state transport.
+
+## Dependency RPC API
 
 Import or copy the TypeScript contract from `src/common/api.ts`. Public methods are registered through FlexStudio dependency API:
 
 ```ts
-const state = await this.hostApi.plugin.callDependency(
+const diagnosticSnapshot = await this.hostApi.plugin.callDependency(
   '@aspen/netease-music-link-essentials',
   'getPlaybackState',
   [{ ensureConnected: true }]
@@ -35,14 +41,14 @@ const state = await this.hostApi.plugin.callDependency(
 | Method | Parameters | Returns |
 | --- | --- | --- |
 | `getApiInfo` | none | Provider UUID, API version, WebSocket URL, capabilities |
-| `getPlaybackState` | `{ ensureConnected?: boolean }` | Current song, play state, timeline, play mode, lyrics, current lyric, connection status |
+| `getPlaybackState` | `{ ensureConnected?: boolean }` | Explicit diagnostic snapshot, including full lyrics and available cover data; never a polling feed |
 | `getConnectionStatus` | `{ connect?: boolean }` | Lightweight connection status and current song |
 | `sendPlayerCommand` | `togglePlayPause`, `play`, `pause`, `previous`, `next`, `togglePlayMode` | `{ success, error? }` |
 | `installFlexLinkPlugin` | none | Copies bundled `FlexLink.plugin` to `C:\betterncm\plugins` |
 | `openExternalUrl` | `http(s)` URL | Opens a documentation or download URL |
 | `reportDiagnostic` | diagnostic object | Writes consumer diagnostics into provider logs |
 
-Cover URLs received from FlexLink are fetched by the backend and normalized into base64 payloads when possible, so consumers can render album art under FlexStudio iframe CSP rules.
+Player actions remain commands through the `sendPlayerCommand` RPC. Installation, URL opening, connection checks, and diagnostic reporting also remain request/response RPCs; they are not State Channel messages.
 
 ## Development
 
