@@ -16,6 +16,8 @@ import {
   type NeteaseMusicLinkConnectionStatus,
   type NeteaseMusicLinkDiagnostic,
   type NeteaseMusicLinkResult,
+  type CompactNeteaseSong,
+  type NeteasePlaybackChannelState,
   type NeteasePlaybackState,
   type NeteasePlayerCommand,
   type NeteaseSong
@@ -57,6 +59,8 @@ const PLAYER_COMMANDS: NeteasePlayerCommand[] = [
   'next',
   'togglePlayMode'
 ];
+const PLAYBACK_CHANNEL = 'playback';
+const MAX_CHANNEL_PAYLOAD_BYTES = 64 * 1024;
 
 export default class NeteaseMusicLinkEssentialsPlugin extends FlexPluginBase {
   private ws: WebSocketLike | null = null;
@@ -66,6 +70,7 @@ export default class NeteaseMusicLinkEssentialsPlugin extends FlexPluginBase {
   private coverCache = new Map<string, { value: string; mimeType: string }>();
   private flexLinkMessageCounts = new Map<string, number>();
   private unloaded = false;
+  private publicationQueue: Promise<void> = Promise.resolve();
 
   async getDefinitions(): Promise<PluginDefinitionsPayload> {
     return {
@@ -79,6 +84,8 @@ export default class NeteaseMusicLinkEssentialsPlugin extends FlexPluginBase {
     await super.onLoad(ctx);
     this.unloaded = false;
     this.registerDependencyApis();
+    await this.registerDependencyStateChannel(PLAYBACK_CHANNEL);
+    await this.queuePlaybackSnapshot();
     this.connectWebSocket();
   }
 
@@ -293,6 +300,7 @@ export default class NeteaseMusicLinkEssentialsPlugin extends FlexPluginBase {
         this.state.lastUpdatedAt = Date.now();
         this.sendFlexLinkCommand({ type: 'GetState' });
         this.logger.info(`Connected to Netease FlexLink at ${WS_URL}`);
+        void this.queuePlaybackSnapshot();
       });
 
       this.ws.on('message', (data: Buffer | string) => {
@@ -308,6 +316,7 @@ export default class NeteaseMusicLinkEssentialsPlugin extends FlexPluginBase {
         this.state.connected = false;
         this.state.lastUpdatedAt = Date.now();
         this.scheduleReconnect();
+        void this.queuePlaybackSnapshot();
       });
 
       this.ws.on('error', (error: Error) => {
@@ -315,12 +324,14 @@ export default class NeteaseMusicLinkEssentialsPlugin extends FlexPluginBase {
         this.state.connectionError = error.message;
         this.state.lastUpdatedAt = Date.now();
         this.logger.warn('Netease FlexLink WebSocket error', { error: error.message });
+        void this.queuePlaybackSnapshot();
       });
     } catch (error) {
       this.state.connected = false;
       this.state.connectionError = error instanceof Error ? error.message : String(error);
       this.state.lastUpdatedAt = Date.now();
       this.scheduleReconnect();
+      void this.queuePlaybackSnapshot();
     }
   }
 
@@ -342,6 +353,75 @@ export default class NeteaseMusicLinkEssentialsPlugin extends FlexPluginBase {
     const payload = message.data ?? message.payload;
     const handled = this.applyFlexLinkMessage(message.type, payload);
     this.logFlexLinkMessage(message, payload, handled);
+    if (handled && !['UpdateLyric', 'LyricUpdate'].includes(message.type ?? '')) {
+      void this.queuePlaybackSnapshot();
+    }
+  }
+
+  private queuePlaybackSnapshot(): Promise<void> {
+    const payload = this.createBoundedPlaybackChannelState();
+    const publish = async () => {
+      try {
+        await this.publishDependencyState(PLAYBACK_CHANNEL, {
+          kind: 'snapshot',
+          payload: payload as unknown as Record<string, any>
+        });
+      } catch (error) {
+        this.logger.warn('Failed to publish Netease playback state', { error: String(error) });
+      }
+    };
+    this.publicationQueue = this.publicationQueue.then(publish, publish);
+    return this.publicationQueue;
+  }
+
+  private createBoundedPlaybackChannelState(): NeteasePlaybackChannelState {
+    const payload: NeteasePlaybackChannelState = {
+      connected: this.state.connected,
+      connectionError: this.state.connectionError,
+      song: this.compactSong(this.state.song),
+      playState: String(this.state.playState),
+      timeline: {
+        currentTime: Number(this.state.timeline.currentTime),
+        totalTime: Number(this.state.timeline.totalTime)
+      },
+      playMode: {
+        isShuffling: Boolean(this.state.playMode.isShuffling),
+        repeatMode: String(this.state.playMode.repeatMode)
+      },
+      currentLyric: this.state.currentLyric ? JSON.parse(JSON.stringify(this.state.currentLyric)) : null,
+      lastUpdatedAt: this.state.lastUpdatedAt
+    };
+    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') <= MAX_CHANNEL_PAYLOAD_BYTES) return payload;
+    return {
+      connected: false,
+      connectionError: 'Playback state exceeded the 64 KiB channel limit.',
+      song: null,
+      playState: 'Stopped',
+      timeline: { currentTime: 0, totalTime: 0 },
+      playMode: { isShuffling: false, repeatMode: 'Off' },
+      currentLyric: null,
+      lastUpdatedAt: Date.now()
+    };
+  }
+
+  private compactSong(song: NeteaseSong | null): CompactNeteaseSong | null {
+    if (!song) return null;
+    const safeUrl = (value: unknown) => typeof value === 'string' && /^https?:\/\//i.test(value) ? value : undefined;
+    const coverIdentity = safeUrl(song.originalCoverUrl) ?? safeUrl(this.resolveCoverFetchUrl(song));
+    return {
+      songName: song.songName,
+      authorName: song.authorName,
+      albumName: song.albumName,
+      ncmId: song.ncmId,
+      duration: song.duration,
+      originalCoverUrl: coverIdentity,
+      coverUrl: safeUrl(song.coverUrl),
+      picUrl: safeUrl(song.picUrl),
+      album: song.album ? {
+        picUrl: safeUrl(song.album.picUrl),
+        coverUrl: safeUrl(song.album.coverUrl)
+      } : undefined
+    };
   }
 
   private applyFlexLinkMessage(type: string | undefined, payload: any): boolean {

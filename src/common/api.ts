@@ -84,6 +84,31 @@ export interface NeteasePlaybackState {
   connectionError: string | null;
 }
 
+export interface CompactNeteaseSong {
+  songName?: string;
+  authorName?: string;
+  albumName?: string;
+  ncmId?: number;
+  duration?: number;
+  originalCoverUrl?: string;
+  coverUrl?: string;
+  picUrl?: string;
+  album?: { picUrl?: string; coverUrl?: string };
+}
+
+export type NeteaseCurrentLyric = NeteaseCurrentLyricState;
+
+export interface NeteasePlaybackChannelState {
+  connected: boolean;
+  connectionError: string | null;
+  song: CompactNeteaseSong | null;
+  playState: string;
+  timeline: NeteaseTimelineState;
+  playMode: NeteasePlayModeState;
+  currentLyric: NeteaseCurrentLyric | null;
+  lastUpdatedAt: number;
+}
+
 export interface NeteaseMusicLinkApiInfo {
   providerUUID: string;
   apiVersion: number;

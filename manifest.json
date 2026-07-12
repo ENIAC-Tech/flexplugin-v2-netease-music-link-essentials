@@ -22,7 +22,8 @@
   "permissions": [
     "logger",
     "file",
-    "system"
+    "system",
+    "pluginApi"
   ],
   "dependencies": [],
   "hasConfigPage": false,

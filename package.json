@@ -5,19 +5,23 @@
   "description": "Reusable FlexLink communication essentials for Netease Cloud Music plugins.",
   "scripts": {
     "build": "flexcli plugin-v2 build",
+    "test": "jest --config jest.config.cjs",
     "dev": "flexcli plugin-v2 dev .",
     "pack": "flexcli plugin-v2 pack --platform win32-x64",
     "sync:plugin-skill-docs": "node scripts/sync-plugin-skill-docs.mjs",
     "sync:plugin-skill-docs:check": "node scripts/sync-plugin-skill-docs.mjs --check"
   },
   "dependencies": {
-    "@flexsdk/runtime": "file:./vendor/flexsdk-runtime-2.1.1.tgz",
-    "@flexsdk/types": "file:./vendor/flexsdk-types-2.1.1.tgz",
+    "@flexsdk/runtime": "file:../../FlexSDK2/packages/runtime",
+    "@flexsdk/types": "file:../../FlexSDK2/packages/types",
     "ws": "^8.20.1"
   },
   "devDependencies": {
-    "@eniac/flexcli": "file:./vendor/eniac-flexcli-2.0.0.tgz",
+    "@eniac/flexcli": "file:../../flexcli",
+    "@types/jest": "^29.5.0",
     "@types/node": "^20.0.0",
+    "jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
     "typescript": "^5.3.0",
     "vue": "^3.4.0"
   }
