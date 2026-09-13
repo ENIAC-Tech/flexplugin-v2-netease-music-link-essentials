@@ -1,6 +1,6 @@
 ---
 name: flexstudio-plugin-developer
-description: Develop, debug, maintain, and release FlexStudio v2 / FlexDesigner2 plugins using FlexSDK2, FlexCLI plugin-v2, plugin manifest.json, Unit definitions including cycled/slider/value-label/label units, backend runtime, frontend iframe bridge, Host API permissions, dependency APIs, marketplace release workflows, and plugin unit migration/update hooks. Use when working inside a FlexStudio plugin project, creating or modifying plugin code, changing Unit data schema or migration logic, checking SDK or CLI APIs, diagnosing plugin loading/RPC/permission/migration issues, or preparing a plugin release.
+description: "Develop or debug FlexStudio v2 plugins using the bundled SDK, manifest, Unit and runtime documentation."
 ---
 
 # FlexStudio Plugin Developer
@@ -9,7 +9,7 @@ Use this skill for FlexStudio v2 plugin work. Keep context focused: load only th
 
 ## Required First Step
 
-Read `references/task-router.md` first. It tells you which bundled docs to load for each task type.
+Use `references/task-router.md` when choosing documentation for an unfamiliar task. Read only the references relevant to the changed contract.
 
 ## Source Of Truth
 
@@ -21,7 +21,7 @@ If the task needs source-code confirmation, read `references/source-map.md` to l
 
 - Do not guess manifest fields, Host API names, CLI flags, bridge methods, or Unit definition shapes. Load the relevant reference first.
 - Treat `manifest.json`, backend runtime, frontend bridge pages, Unit definitions, and release workflow as one system. Check cross-file contracts when changing any of them.
-- Use `flexcli plugin-v2 validate`, `flexcli plugin-v2 build`, and `flexcli plugin-v2 pack` when verifying plugin changes.
+- Choose validation for the affected contract: validate manifest/schema changes, build changed executable code, and pack when packaging, assets or release behavior is involved.
 - Keep generated plugin projects compatible with the template structure unless the user explicitly asks for a custom structure.
 - When docs and local code disagree, prefer the local package/API version in the plugin project, then note the mismatch.
 
