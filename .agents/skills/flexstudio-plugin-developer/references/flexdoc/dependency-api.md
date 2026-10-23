@@ -2,6 +2,37 @@
 
 插件依赖 API 用于让一个插件后端显式暴露可被直接依赖插件调用的方法。典型场景是把底层能力封装成基础插件，再由上层插件复用，例如：
 
+## Dependency State Channel
+
+> 选择边界：Dependency State Channel 面向声明过的直接依赖；Renderer State Channel 面向 Provider 自己的 renderer session。二者都有 retained snapshot/delta 语义，但授权和 wire identity 不同。
+
+当依赖插件需要持续发布“最新状态”而不是单次请求/响应时，使用由宿主治理的 State Channel。它不是全局事件总线：Consumer 必须在 manifest 中声明 Provider 为直接依赖，并声明现有的 `pluginApi` 权限；Provider 的注册和发布也必须声明 `pluginApi`，无需新增 manifest 字段。
+
+Provider 在 `onLoad()` 中注册稳定、全小写的 channel 名称，再发布完整 snapshot 或 RFC 7396 Merge Patch delta：
+
+```ts
+await this.registerDependencyStateChannel('playback')
+await this.publishDependencyState('playback', {
+  kind: 'snapshot',
+  payload: { playing: true, position: 0 },
+})
+```
+
+Consumer 使用 `onDependencyState()` 订阅，并保存返回的 unsubscribe 函数；`replayLatest: true` 先收到 `available`，随后收到当前完整 snapshot（如果 Provider 已发布状态）。
+
+```ts
+const unsubscribe = await this.onDependencyState('@acme/provider', 'playback', async (event) => {
+  if (event.kind === 'unavailable') return
+  if (event.resyncRequired) {
+    // Discard local cache and replace it with event.payload.
+  }
+  // Replace local state with snapshot payload using epoch/revision ordering.
+  // Provider delta input is materialized by Host; subscriber payload is not a patch.
+}, { replayLatest: true })
+```
+
+回调只存在于 Consumer 自己的后端进程；不会跨 IPC 传递函数。SDK 在 handler 完成（即使抛错）后 ACK，宿主才会投递下一项。Provider 重启时 epoch 增加；Consumer 收到更高 epoch 时必须丢弃旧状态。Provider 输入可以是 snapshot 或 Merge Patch delta，Host 合并后统一向订阅者发送完整 `kind: 'snapshot'`。消费端替换状态，不再次合并。`available` 使用 revision 0；`unavailable` 会递增 revision，生命周期事件应在数据去重前处理。单次输入及合并后的 retained state 都必须是根对象的 JSON，最大 64 KiB；高频合并或队列溢出时，宿主发送带 `resyncRequired: true` 的完整 snapshot。不要用 `bus.emit()` 或 topic 前缀替代该能力。
+
 ```text
 plugin-a -> plugin-b -> plugin-c
 ```
@@ -19,6 +50,18 @@ plugin-a -> plugin-b -> plugin-c
 不适合的场景：
 
 - 同一插件前端调用自己的后端：使用 `backendRpc()` 和 `registerRendererRpc()`。
+
+## 状态与调用机制对照
+
+| 机制 | 生产者 → 消费者 | 生命周期 | 授权 | 适用场景 |
+|---|---|---|---|---|
+| Dependency State Channel | Provider 后端 → 直接依赖后端 | retained replay、epoch/revision、ACK | Consumer 的 `pluginApi` + manifest 直接依赖 | 持续依赖状态 |
+| Renderer State Channel | 插件后端 → 同插件 iframe | retained replay、epoch/revision、ACK | Provider 当前 `pluginApi` permission rule；Host 绑定 session | 持续同插件 UI 状态 |
+| dependency API | Consumer 后端 → Provider 后端 | 一次请求/响应 | `pluginApi` + 直接依赖 | 一次性跨插件命令/查询 |
+| backend RPC | 同插件 iframe → 后端 | 一次请求/响应 | Host 隔离的同插件 session | 一次性 UI 命令/查询 |
+| global bus | Host topic 广播 | 非 retained | topic/capability 规则 | Host 事件；不得代替 retained state |
+
+不要用 interval、long-polling、重复 RPC read 或 global bus 模拟 retained state。
 - 松散广播或订阅事件：使用事件总线。
 - 调用 FlexStudio 宿主能力：直接使用对应 Host API。
 
@@ -149,6 +192,26 @@ const result = await this.hostApi.plugin.callDependency(
 - 调用发生在后端进程之间；前端页面需要先通过 `backendRpc()` 调用自己的后端，再由后端调用依赖插件。
 - 参数和返回值必须可序列化，不支持函数、类实例引用、循环引用或进程内对象句柄。
 - 宿主会等待依赖插件响应；目标插件退出、崩溃、降级或超时都会使调用失败。
+
+## 缺失依赖的默认终止策略
+
+使用 FlexSDK2 的 `FlexPluginBase` 时，SDK 会检测
+`this.hostApi.plugin.callDependency()` 的依赖可用性错误。目标依赖未安装、未启用、未加载、
+未找到，或没有声明为直接依赖时，SDK 默认会向宿主上报 `reason: "missingDependency"` 的
+`plugin-fatal`，然后终止当前插件后端进程。FlexStudio 会把调用方插件标记为降级，而不是反复重启。
+
+只有在插件明确能在缺少该依赖时继续降级运行时，才应显式禁用这个策略：
+
+```ts
+export default class ConsumerPlugin extends FlexPluginBase {
+  constructor() {
+    super()
+    this.setMissingDependencyAutoTerminate(false)
+  }
+}
+```
+
+禁用自动终止后，`callDependency()` 会按原样抛出宿主错误，插件需要自行捕获并实现 fallback。
 
 ## 常见错误
 

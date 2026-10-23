@@ -2,6 +2,26 @@
 
 本页按开发阶段整理常见问题。优先使用 `flexcli plugin-v2 validate`、`plugin-v2 dev`、`plugin-v2 logs` 和 `plugin-v2 diagnostics` 定位问题。
 
+## Dependency State Channel
+
+- `lacks permission 'pluginApi'`：Provider 注册/发布或 Consumer 订阅的 manifest 缺少 `pluginApi`；分别在使用这些方法的插件中声明权限。
+- `does not directly depend on`：Consumer 必须在 `dependencies` 中直接声明 Provider，传递依赖不允许订阅。
+- `channel ... is unavailable`：Provider 尚未注册该 channel、已禁用，或进程已经退出；等待新的 `available` 后再订阅或恢复状态。
+- payload JSON/64 KiB 错误：payload 根必须是 plain object，不能包含 Date、Map、Set、BigInt、函数、循环引用或非有限数字。
+- revision 不连续或 `resyncRequired`：清除 Consumer 本地缓存，使用事件携带的完整 snapshot 覆盖；收到更高 `providerEpoch` 时同样清除旧状态。
+
+## Renderer State Channel
+
+- **unknown channel**：确认后端已在 `await super.onLoad(ctx)` 后调用 `registerRendererStateChannel()`，且前后端 channel 字符串完全一致。
+- **missing permission**：Provider 必须满足当前 `pluginApi` permission rule；检查 manifest、capability registry 与 Host 测试是否一致，不要发明新 permission。
+- **payload too large**：每个 snapshot/delta 必须是 JSON object，序列化后不超过 64 KiB；缩小 payload，不要拆成轮询 RPC。
+- **stale revision**：忽略同 epoch 中小于等于当前 revision 的事件；revision gap 清空缓存并等待 snapshot。
+- **no replay**：订阅时传 `{ replayLatest: true }`，并确认 Provider 已发布完整 snapshot。只发布 delta 不能建立初始缓存。
+- **unavailable**：清空 UI 缓存并展示不可用。Provider 恢复后的更高 epoch 必须等待新 snapshot，不能沿用旧值。
+- **handler errors**：handler 串行运行且无论成功/失败都会 ACK。记录异常并保持 handler 快速；Host 可能设置 `resyncRequired`。
+- **forgotten unsubscribe**：Vue unmount 主动调用订阅返回的 async unsubscribe。Host 会在 iframe session 结束时自动清理，但不能代替组件清理。
+- **身份参数**：renderer 不提交 plugin UUID 或 session ID；Host 从 iframe session 推导。若示例要求这些参数，说明 API 名称或示例已过时。
+
 ## CLI 无法连接 FlexStudio
 
 现象：
@@ -9,16 +29,16 @@
 ```text
 WebSocket connection failed
 connection refused
-unauthorized
 ```
 
 检查：
 
 - FlexStudio 是否正在运行。
-- 端口是否为默认 `34579`。
-- 是否需要 token。
-- `--host`、`--port`、`--token` 是否与 FlexStudio 控制服务一致。
-- 环境变量 `FLEX_WS_TOKEN` 或 `PLUGIN_WS_TOKEN` 是否正确。
+- **设置 > Plugins** 右上角 **Plugin debugging** 对话框中的 **Debug mode**（开发监听）是否开启（默认关闭）；该对话框也显示会话、插件状态和近期日志。
+- 设置页是否显示端口占用或监听失败；端口占用时选择其他端口并应用。
+- `flexcli plugin-v2 config` 显示的已保存端口是否与宿主一致；首次使用默认为 `34579`。
+- 使用 `flexcli plugin-v2 config --port <port>` 保存匹配端口，或在连接命令中显式指定 `--port`。
+- host 应为本机 `127.0.0.1`；开发连接直接接受命令。
 
 示例：
 
@@ -36,6 +56,8 @@ flexcli plugin-v2 diagnostics --host 127.0.0.1 --port 34579
 - `entry` 指向源码文件而不是构建产物。
 - `permissions` 中包含未知权限。
 - native 插件没有正确声明 `platforms`。
+- 使用了 `http` 或 `websocket` 权限，但没有设置 `requiresNetwork: true`。
+- `runtime.startupTimeoutMs` 写了极端值，触发 validate warning。
 
 运行：
 
@@ -89,6 +111,9 @@ flexcli plugin-v2 diagnostics
 | `custom requires hasView: true` | 为 custom Unit 设置 `hasView: true` 并提供 `unitView` 入口。 |
 | `canvas cannot have hasView: true` | Canvas Unit 不使用 iframe 运行视图。 |
 | `canvas cannot have hasAppearanceEditor: true` | Canvas Unit 不能提供外观编辑器。 |
+| `Duplicate builtin unit template uuid in payload` | 确保 `builtinUnits[].uuid` 在当前 payload 内唯一，且不与插件自有 Unit 生成的模板 UUID 冲突。 |
+| `Builtin unit template ... plugin metadata is not allowed` | `builtinUnits` 只能提供普通内置 Unit 模板，删除顶层和嵌套 `data.layoutData` 中的 `plugin` 字段。 |
+| `Unknown built-in unit typeId in builtinUnits` | `builtinUnits[].typeId` 必须指向宿主已经注册的内置 Unit 类型，不能使用插件自定义 `typeId`。 |
 
 建议使用 SDK helper：
 
@@ -127,6 +152,18 @@ await super.onLoad(ctx)
 
 否则 `this.hostApi`、`this.logger`、`this.pluginUUID` 和 `this.pluginVersion` 不会初始化。
 
+如果日志显示启动超时或插件长时间停留在 starting 阶段，优先检查：
+
+- `onLoad()` 里是否在等待网络登录、全量同步、目录扫描或大文件解析。
+- 是否把 definitions 注册放在慢任务之后。
+- `runtime.startupTimeoutMs` 是否只是掩盖了不必要的慢启动。
+
+推荐处理：
+
+- 保持 `onLoad()` 简短，只做注册和轻量初始化。
+- 把慢任务挪到后台 `jobs` 流程。
+- 只在确有必要时调整 `runtime.startupTimeoutMs`。
+
 ## Host API 调用失败
 
 常见原因：
@@ -137,6 +174,9 @@ await super.onLoad(ctx)
 - 文件路径不存在或无权限。
 - 设备未连接。
 - Canvas Unit 已卸载但仍在推帧。
+- `hostApi.secrets` 记录因宿主安全存储变化而解密失败。
+- OAuth provider 没有允许 loopback redirect URI，或回调 `state` 不匹配。
+- `jobs.cancel()` 在插件尚未完成清理前被误当成“请求取消”调用。
 
 排查步骤：
 
@@ -144,6 +184,12 @@ await super.onLoad(ctx)
 2. 检查 `manifest.json` 的 `permissions`。
 3. 运行 `flexcli plugin-v2 validate --plugin-dir .`。
 4. 查看 `flexcli plugin-v2 logs <uuid>`。
+
+与新权限相关的额外检查：
+
+- `secrets`：如果 `get()` 返回 `null` 但 `list()` 还能看到同名且 `encrypted: true` 的记录，通常是旧密文在当前系统上无法解密。让用户重新登录或重新保存 secret，不要尝试读取密文。
+- `oauth`：确认 provider 授权地址最终使用的是 loopback `redirect_uri`，并且不要依赖自定义 URI scheme。
+- `jobs`：取消流程应先由宿主把 `cancelRequested` 置为 `true`，插件轮询后完成清理，再调用 `jobs.cancel(jobId)` 收尾。
 
 ## 插件依赖 API 调用失败
 
@@ -226,6 +272,22 @@ await setUnitData({
 })
 ```
 
+## 编辑器写入被拒绝（set-unit-error / convert-unit-error）
+
+症状：`setUnit`、`setUnitData` 或 `convertUnit` 的 Promise 以错误拒绝，宿主弹出“插件无法更新此 Unit”。
+
+先看错误消息：
+
+| 消息 | 原因 | 处理 |
+| --- | --- | --- |
+| `PLUGIN_SET_UNIT_IDENTITY_CHANGED` | `setUnit` 改了 `uuid`、`typeId` 或 `plugin`。 | 要改变定义用 `convertUnit`，`setUnit` 只改内容。 |
+| `PLUGIN_CONVERT_UNKNOWN_TARGET` / `PLUGIN_CONVERT_FOREIGN_SOURCE` | `unitId` 不是本插件的定义，或当前 Unit 不属于本插件。 | 传目标定义的 `plugin.unitId`（不是 `typeId`）。 |
+| `PLUGIN_CONVERT_INVALID_DATA` / `..._APPEARANCE` / `..._ICON` | `data` 不是对象、`appearance` 不是数组或 `icon` 不是字符串。 | 修正参数类型。 |
+| `PLUGIN_UNIT_INVALID: ...` | 结果不是合法 Unit，后面列出失败的规则。 | 按规则修正；`invalid-value-label-domain` / `unsupported-slider-format` 见下。 |
+| `BUILTIN_ICON_UNKNOWN` | 使用了宿主图标表里没有的 `mdi-*` 图标。 | 换一个存在的图标名。 |
+
+`invalid-value-label-domain`：`value-label` 缺少 `data.valueLabel`，或 `format` 不合法（必须恰好一个 `%[0][w][.d]f`，字面 `%` 写成 `%%`）。最常见的原因是用只含绑定字段的数据**整体替换**了 `unit.data`，把 `valueLabel` 丢了。解决办法是基于当前 `unitData` 合并后再写，或通过 `convertUnit` 带上完整的原生配置。这条规则现在在编辑时就会拒绝；如果是更早的写入留下的旧数据，上传时会报同样的原因，并带上页面名和 Unit 名，打开那个 Unit 的编辑器重写即可。
+
 ## backendRpc 找不到方法
 
 错误：
@@ -299,7 +361,7 @@ flexcli plugin-v2 pack --dist-dir dist --platform darwin-arm64
 
 检查：
 
-- workflow 是否固定到官方 tag，例如 `@v1.1.0`。
+- workflow 是否固定到官方 tag，例如 `@v1.3.0`。
 - 是否错误使用 `@main`。
 - 仓库 secret `FLEX_MARKETPLACE_WEBHOOK_SECRET` 是否存在。
 - Release 是否是 `published`，不是 draft。
@@ -370,3 +432,19 @@ flexcli plugin-v2 logs @owner/plugin-name
 - FlexStudio 插件市场中的插件状态
 - 插件是否启用
 - 插件是否有未满足依赖
+
+## Composite 或 Button Group 被拒绝
+
+| 现象／错误 | 检查与处理 |
+| --- | --- |
+| `CAPABILITY_UNSUPPORTED` | 宿主、SDK、固件需同时支持 Composite v1；不要退回 canvas。 |
+| `STALE_GENERATION` / `OWNER_MISMATCH` | 从当前 load 取序列号、UUID 与 generation，按插件和实例隔离，不复用旧目标。 |
+| `CACHE_MISS` | 未找到已确认部署的配置或快照；不能读取编辑稿代替。 |
+| `RESULT_UNKNOWN` | 事务已发出但没有收到设备应答；先读设备实际快照确认，再决定是否重做，不要盲目重发业务。 |
+| `NOT_WRITABLE` | 检查精确属性路径、保存元素结构，以及固定的 Button mode/initialStateId。 |
+| `COMPOSITE_RESOURCE_*` | 检查完整 embedded Theme、canonical base64、真实 SHA-256/字节数、image-only 闭包与限额。 |
+| 模板在空项目无法插入 | 不可只声明 asset UUID；资源必须随 composite.resources 携带，并经真实图像检查。 |
+| `PLUGIN_UNIT_WRITE_STALE` | 转换或写入等待期间上下文变化；重新读取当前 Unit，避免覆盖更新。 |
+| 旧按钮组定义失败 | v1 要求 presentationVersion: 1、共享 background/foregroundColor/fontFamily/fontSize/iconSize 与四种布局预设；不接受旧显示枚举、逐按钮外观或 activeColor。 |
+
+尺寸不足时先检查布局退化提示和字号档位；使用宿主的“按当前尺寸重新计算档位”，不要运行时换任意字号或字体。插件缺失时保存外观和资源仍保留，离线 Button 禁止业务触摸。

@@ -1,11 +1,17 @@
 # CLI Reference
 
-FlexCLI 包名为 `@eniac/flexcli`。v2 插件开发使用 `plugin-v2` 命令组与 FlexStudio 的插件控制 WebSocket 通信。创建插件项目仍通过 `plugin create`，创建时选择 v2 模板。
+FlexCLI 包名为 `@eniac/flexcli`。`plugin-v2` 命令组仅包含在 2.x 版本中；npm 上的 1.x 版本不含该命令组，请按下文从源码仓库安装。v2 插件开发使用 `plugin-v2` 命令组与 FlexStudio 的插件控制 WebSocket 通信。创建插件项目仍通过 `plugin create`，创建时选择 v2 模板。
 
 ## 安装
 
 ```bash
 npm install -g @eniac/flexcli
+```
+
+npm 上的发布版本可能落后于 FlexStudio。需要 `plugin-v2` 时，从源码仓库安装：
+
+```bash
+npm install -g https://github.com/ENIAC-Tech/flexcli/tarball/refs/heads/master
 ```
 
 检查版本和帮助：
@@ -31,17 +37,18 @@ flexcli plugin-v2 --help
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--host <host>` | `127.0.0.1` | FlexStudio 插件控制 WebSocket host。 |
-| `--port <port>` | `34579` | FlexStudio 插件控制 WebSocket port。 |
-| `--token <token>` | 无 | 鉴权 token。也可以使用环境变量。 |
+| `--port <port>` | 已保存的端口，初始为 `34579` | FlexStudio 插件开发监听端口；显式指定后保存供后续命令使用。 |
 
-Token 环境变量：
+先在 FlexStudio 的 **设置 > Plugins** 右上角打开 **Plugin debugging**（试管图标）对话框，开启 **Debug mode**（开发监听）。默认关闭，开启后可在同一对话框设置端口，范围为 1–65535；开关和端口均在宿主重启后保留。连接只监听 `127.0.0.1`，可直接发送管理命令。
+
+CLI 端口独立持久化，不需要宿主在线即可设置：
 
 ```bash
-FLEX_WS_TOKEN=<token>
-PLUGIN_WS_TOKEN=<token>
+flexcli plugin-v2 config --port 34579
+flexcli plugin-v2 config
 ```
 
-`FLEX_WS_TOKEN` 和 `PLUGIN_WS_TOKEN` 都可用。
+Windows 配置文件为 `%APPDATA%/flexcli/config.json`；其他系统为 `$XDG_CONFIG_HOME/flexcli/config.json`，未设置 XDG 时使用 `~/.config/flexcli/config.json`。可通过 `FLEXCLI_CONFIG_PATH` 显式指定配置文件。
 
 ## 创建插件
 
@@ -85,7 +92,6 @@ flexcli plugin-v2 list
 ```text
 --host <host>
 --port <port>
---token <token>
 ```
 
 输出为 JSON，包含插件状态和元数据。
@@ -110,7 +116,6 @@ flexcli plugin-v2 install ./dist
 ```text
 --host <host>
 --port <port>
---token <token>
 ```
 
 ## plugin-v2 uninstall
@@ -191,7 +196,6 @@ flexcli plugin-v2 dev . --host 127.0.0.1 --port 34579
 ```text
 --host <host>
 --port <port>
---token <token>
 ```
 
 ## plugin-v2 validate
@@ -295,7 +299,6 @@ flexcli plugin-v2 diagnostics
 ```text
 --host <host>
 --port <port>
---token <token>
 ```
 
 用于排查插件管理器、已安装插件、后端进程和控制服务状态。

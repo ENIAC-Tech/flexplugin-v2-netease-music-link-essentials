@@ -2,6 +2,32 @@
 
 插件后端运行在 FlexStudio 启动的独立 Node.js 进程中。后端负责生命周期、定义注册、Host API 调用、设备事件处理、Canvas 推帧和前端 RPC。
 
+## 依赖状态订阅
+
+Dependency State Channel 的 Provider 注册/发布与 Consumer 订阅都应在 `onLoad()` 中、`await super.onLoad(ctx)` 之后尽早完成。Consumer 的 handler 在自身后端进程串行执行；SDK 会在 handler 成功或失败后 ACK。不要把 handler 传给 Host，也不要在 `onLoad()` 中等待 Provider 发布首个 snapshot。Provider 暂不可用时 Consumer 会收到 `unavailable`；Provider 重启后会收到更高 epoch 的 `available`，随后可能收到 replay snapshot。`onUnload()` 会自动 best-effort unsubscribe，本地也可保存并提前调用 unsubscribe。
+
+## Renderer State Channel
+
+同插件 UI 的持续状态在 `onLoad()` 注册并发布完整 snapshot：
+
+```ts
+await this.registerRendererStateChannel('runtime-status')
+await this.publishRendererState('runtime-status', {
+  kind: 'snapshot',
+  payload: { status: 'ready', jobs: 0 }
+})
+
+// 状态变化时发布 delta；不要用定时轮询制造变化。
+await this.publishRendererState('runtime-status', {
+  kind: 'delta',
+  payload: { jobs: 1 }
+})
+```
+
+签名为 `registerRendererStateChannel(channel: string): Promise<void>` 与 `publishRendererState(channel: string, update: RendererStateUpdate): Promise<void>`。Provider 输入可以是完整 snapshot 或 RFC 7396 Merge Patch delta；输入与合并后 retained state 的 JSON 都最多 **64 KiB**。Host 向 iframe 统一投递完整 `snapshot`，前端直接替换缓存。发布和 `unavailable` 会递增 revision，`available` 使用 revision 0。Provider 重启产生新 epoch；消费端先处理可用性事件，再进行数据 revision 去重。
+
+wire 只携带 channel 与 update。插件 UUID 由后端进程身份推导，不能由插件伪造。Provider 沿用当前 `pluginApi` permission rule，必须与 capability registry 和对应测试一致。session 关闭时 Host 自动清理 renderer subscriptions。
+
 ## 入口类
 
 推荐后端默认导出继承 `FlexPluginBase` 的类：
@@ -55,14 +81,38 @@ abstract getDefinitions(): Promise<PluginDefinitionsPayload>
 5. 插件运行，处理事件、RPC、Host API 调用。
 6. 插件禁用、卸载或重载时，FlexStudio 调用 `onUnload()` 并关闭进程。
 
+## 启动阶段建议
+
+`onLoad()` 决定插件能否尽快进入可用状态。建议把它视为“接线和注册阶段”，而不是“把所有外部数据都准备好”的阶段。
+
+建议顺序：
+
+1. 先调用 `await super.onLoad(ctx)`。
+2. 尽早注册 Renderer RPC、依赖 API、事件订阅和必要的清理逻辑。
+3. 让 `getDefinitions()` 返回稳定的基础定义。宿主启动时必定拉取这个方法；`registerDefinitions()` 只用于运行时替换定义。
+4. 把远端同步、目录扫描、首轮索引、全量缓存预热等慢任务放到后台。
+
+尤其是带网络访问的插件，不要在 `onLoad()` 里等待远端登录、拉全量资源、扫完整目录或完成全量 provider 同步。更好的模式是：
+
+- 先让插件后端启动成功。
+- 先注册 definitions，让 Unit 和配置页尽快可见。
+- 再用 `hostApi.jobs` 启动慢同步，并通过进度或 snackbar 告知用户。
+
+如果插件确实需要更长的启动窗口，可以在 manifest 里设置 `runtime.startupTimeoutMs`，但这只是补充元数据，不是把慢任务塞进 `onLoad()` 的理由。
+
+### WebSocket 生命周期
+
+`hostApi.ws.connect()` 返回的 handle 属于当前插件后端进程。插件应尽量在 `onUnload()` 中主动调用 `close()` 关闭自己打开的 WebSocket，并取消已注册的消息监听，避免 reload 或 disable 时仍有业务逻辑继续处理旧连接消息。
+
+如果插件没有主动关闭，FlexStudio 也会在插件进程停止时强制关闭该插件剩余的 sockets，包括插件卸载、禁用、重载、崩溃或进程退出等场景。
 ## Unit 迁移 Hook
 
-插件更新后，旧项目里已经添加的插件 Unit 不会重新用 `defaultData` 创建。FlexStudio 会扫描当前项目 preset 中的旧版本插件 Unit，并在插件后端启用后调用可选的 `migrateUnit()` 实例方法。插件未实现该方法时视为 no-op，宿主仍会把 Unit 的 `plugin.pluginVersion` 更新到目标版本。
+插件更新后，旧项目里已经添加的插件 Unit 不会重新用 `defaultData` 创建。FlexStudio 会扫描当前 Project 中的旧版本插件 Unit，并在插件后端启用后调用可选的 `migrateUnit()` 实例方法。插件未实现该方法时视为 no-op，宿主仍会把 Unit 的 `plugin.pluginVersion` 更新到目标版本。
 
 触发场景：
 
 - 用户在插件市场更新插件后，立即迁移当前项目中该插件的旧版本 Unit。
-- 打开项目时，preset 的 `pluginDependencies` 快照显示本机已安装插件版本高于项目内 Unit 版本。
+- 打开项目时，Project 的插件依赖缓存显示本机已安装插件版本高于项目内 Unit 版本。迁移依据实际 Unit 与当前 Definitions；preset 缓存不是 Project 的权威数据契约。
 
 建议签名：
 
@@ -143,6 +193,8 @@ await this.registerDefinitions(payload)
 
 `registerDefinitions()` 需要 `definitions` 权限，并会替换当前插件此前注册的所有定义。
 
+对需要慢同步的插件，推荐先注册一版最小可用定义，再在后台 job 完成后按需刷新。这样用户可以更早看到插件条目和基础编辑器，而不是等待远端同步结束。
+
 辅助方法：
 
 ```ts
@@ -157,6 +209,8 @@ const unit = this.createUnitTemplate({
   categoryId: 'actions',
 })
 ```
+
+`createUnitTemplate()` 未传入 `layouts` 时生成 1×1 的 default；直接返回原始定义则必须显式提供 `layouts.default`。设备预设、fallback 和跨设备 Page 转换共用的声明规则见 [Unit 定义](./unit-definitions.md)。
 
 ## 配置存储
 
@@ -227,6 +281,17 @@ this.unregisterRendererRpc('lookupUser')
 ```
 
 RPC handler 必须返回可序列化结果。抛出的错误会返回给前端调用方。
+
+## 后台任务模式
+
+对远端 provider 同步、本地资源扫描、系统自动化索引或长时导入任务，推荐使用 `hostApi.jobs`：
+
+- `onLoad()` 只完成快速初始化。
+- 把慢任务放到异步函数中启动。
+- 用 `jobs.update()` 汇报进度和状态消息。
+- 定期轮询 `jobs.isCancellationRequested()`，在清理后调用 `jobs.cancel(jobId)`。
+
+这类任务的数据和自动化业务逻辑仍属于插件自身或其 native helper；FlexStudio core 只负责生命周期、权限、运行时 API 和任务记录。
 
 ## 插件依赖 API
 
@@ -374,13 +439,14 @@ await this.hostApi.ui.showSnackbarMessage({
 | `isCanvasPushTerminalError` | 判断 Canvas 推帧错误是否应停止渲染循环。 |
 
 <!-- plugin-cycled-slider:start -->
-## Plugin cycled / slider Runtime Helpers
+## Plugin cycled / slider / button-group Runtime Helpers
 
-`FlexPluginBase` 提供 Unit runtime helper，减少直接拼 Host API 调用：
+`FlexPluginBase` 提供 Unit runtime helper，减少直接拼 Host API 调用；Button Group 状态读取/写入直接使用 `this.hostApi.unit` 中的 API。
 
 ```ts
 await this.onUnitEvent('acme.media.playback', 'pressed', async (event) => {
   const payload = event.payload as any
+  await this.setUnitRuntimeStatus(payload.serialNumber, payload.uuid, 'disabled')
   await this.setUnitFunction(payload.serialNumber, payload.uuid, 'pause')
 })
 
@@ -388,9 +454,112 @@ await this.onSliderUnitChanged('acme.media.volume', async (payload) => {
   await mediaPlayer.setVolume(payload.value)
   await this.setUnitSliderValue(payload.serialNumber, payload.uuid, payload.value)
 })
+
+await this.onUnitEvent('acme.media.source', 'changed', async (event) => {
+  const payload = event.payload as {
+    serialNumber: string
+    uuid: string
+    activeButtonIds: string[]
+    changedButtonId?: string
+  }
+  await mediaRouter.selectInputs(payload.activeButtonIds)
+})
+
+await this.hostApi.unit.setButtonGroupState(serialNumber, unitUuid, ['hdmi'])
+const activeButtonIds = await this.hostApi.unit.getButtonGroupState(serialNumber, unitUuid)
 ```
 
 `onSliderUnitChanged()` 接收宿主规范化后的 slider payload，包含 `value`、`phase`、`min`、`max`、`step`、`format`、`displayText`、`data` 和 `serialNumber`。
 
-`cycled` 的建议流程是：监听 `pressed` 或 `touch` -> 执行业务动作 -> 成功后调用 `setUnitFunction(serialNumber, unitUuid, functionId)`。宿主和设备不会自动切换 plugin `cycled` 状态。
+`setUnitRuntimeStatus(serialNumber, unitUuid, status)` 可设置 `enabled`、`disabled`、`warning`、`loading` 四种设备端运行时状态。`disabled` 会在设备端阻断交互，`warning` 只显示告警角标。
+
+- `loading`：设备端显示居中的 loading spinner，并阻断该 Unit 的设备交互；适合短时异步动作。动作完成后插件必须显式恢复为 `enabled`、`warning` 或 `disabled`。
+
+短时异步动作应先进入 `loading`，再使用 `try/finally` 保证状态收敛；显式设备动作的结果可以通过 `hostApi.device.showSnackbarMessage()` 告知发起设备。`cycled` 的建议流程是：监听 `pressed` 或 `touch` -> 执行业务动作 -> 成功后调用 `setUnitFunction(serialNumber, unitUuid, functionId)`。宿主和设备不会自动切换 plugin `cycled` 状态。
+
+```ts
+await this.setUnitRuntimeStatus(serialNumber, unitUuid, 'loading')
+let finalStatus: 'enabled' | 'warning' = 'warning'
+try {
+  await runAction()
+  finalStatus = 'enabled'
+  void this.hostApi.device.showSnackbarMessage(serialNumber, {
+    message: 'Action completed',
+    type: 'success',
+  }).catch(() => undefined)
+} catch (error) {
+  void this.hostApi.device.showSnackbarMessage(serialNumber, {
+    message: 'Action failed',
+    type: 'error',
+  }).catch(() => undefined)
+  throw error
+} finally {
+  await this.setUnitRuntimeStatus(serialNumber, unitUuid, finalStatus)
+}
+```
+
+`button-group` 的建议流程是：监听 `changed` -> 根据 `activeButtonIds` 执行业务动作；需要由插件主动恢复或切换状态时，调用 `hostApi.unit.setButtonGroupState(serialNumber, unitUuid, activeButtonIds)`。SDK 会通过 Host API 校验按钮 ID、单选/多选和 mandatory 约束。
 <!-- plugin-cycled-slider:end -->
+
+## 面板模型与事件辅助
+
+从 @flexsdk/runtime 导入 buildPanelModel、validatePanelModel；模型、页面、动作、事件和结果类型从 @flexsdk/types 导入。辅助函数使用固定结构验证，不依赖前端动态代码生成。buildPanelModel 返回校验后的独立副本。
+
+```ts
+await this.onPanelEvent('@demo/monitor.panel', async event => {
+  if (event.event === 'action' && event.serialNumber) {
+    const result = await performAction(event.item, event.page, event.action)
+    await this.ackPanelAction(
+      event.serialNumber, event.uuid, event.token, result.outcome,
+    )
+  }
+})
+await this.setPanelModel(serialNumber, unitUuid, buildPanelModel({
+  v: 1,
+  items: [{ id: 'item', title: 'Status', state: 'idle', pages: [] }],
+}))
+await this.setUnitState(serialNumber, labelUuid, 'idle')
+```
+
+onPanelEvent 复用 onUnitEvent(typeId, 'panel')，验证并解包设备 payload，卸载时由 SDK 清理。事件为 select {item: string|null}、action {item,page,action,token}、longPress {item,area:'card'|'info'}，并含 uuid/typeId/serialNumber。Host 主题为 device.plugin.unit-panel，不让设备提供可信插件身份。
+
+插件按当前内存中的业务状态处理动作。请求已消失或事件对应的条目/页面/动作失效时回复 expired；超时无法确定结果时回复 unknown，不自动重试。多设备操作需要共享同一个业务请求去重状态。原生界面不把快捷回复正文传回插件，只发动作 ID。
+
+## 设备输入功能
+
+物理控件绑定使用 `defineFunction` / `FlexPluginBase.functions`，独立于 Unit 定义。声明 `input` 权限；复杂设置使用 `input-function-settings` 和绑定会话桥接，反馈通过当前上下文，状态按设备与绑定隔离。完整生命周期、字段、触觉和验证要求见[输入功能](./input-functions.md)。
+
+## Composite 订阅与业务确认
+
+Composite 沿用 Unit 的 load/unload 通知。按 `serialNumber + unitUuid + generation` 隔离实例；load 后以 `this.compositeElements` 读取实际快照、建立订阅，再同步业务初值。首个快照中的 identifier 用于查找当前 UUID；不要把模板逻辑标识或上次部署 UUID 当运行身份。
+
+下面是已取得 target 后的处理片段；`readActualPower` / `requestPower` 是插件自己的业务适配器。保存 subscription 并在本实例不再使用时释放。handler 内捕获业务失败，确认的是真实状态。
+
+```ts
+const api = this.compositeElements
+const configs = await api.getButtonConfigs(target)
+const subscription = await api.subscribe(target, { events: ['activate', 'cancel', 'stateChanged'] }, async delivery => {
+  if (delivery.kind !== 'event') return
+  const event = delivery.event
+  if (event.eventType !== 'activate' || event.target.type !== 'button') return
+  if (!event.requestId || !event.stateId) return // key Button 在单独的动作分支处理
+  const requestId = event.requestId
+  try {
+    await requestPower(configs[event.target.uuid], event.stateId)
+    const actualStateId = await readActualPower(configs[event.target.uuid])
+    await api.applyTransaction(target, {
+      operations: [{ op: 'setState', elementUuid: event.target.uuid,
+        outcome: 'confirmed', stateId: actualStateId, requestId }],
+    })
+  } catch (error) {
+    // 只有确认业务失败时报告 failed；业务超时可能已经执行，应查询真实状态。
+    this.logger.error('Power operation needs reconciliation', error)
+  }
+})
+// 实例卸载、目标替换或插件退出时：
+await subscription.dispose()
+```
+
+后端业务已明确失败时发送 `{ op: 'setState', elementUuid, outcome: 'failed', requestId: 原业务请求ID }`。业务推送不关联触摸时可发送 confirmed + 实际 stateId，省略业务 requestId。旧确认不能覆盖新 pending；不要捕获 `STALE_REQUEST` 后改成无关联确认来绕过检查。宿主事务超时与业务超时分开处理，事务 `RESULT_UNKNOWN` 不等于失败：重新读取快照再决定，不自动重放业务。
+
+空调类 Unit 可由 Text 温度、独立加减 Button、toggle 电源和 cycled 模式组成。加减 key Button 的 repeat 每次更新业务目标，cancel 停止连续操作；Text 更新用 setText。共享一套业务状态 owner，API stateChanged 不再次触发业务请求。物理旋钮通过 Input Function 定位目标 Composite，由插件决定选中项与操作；用 patch 绘制选中提示，不伪造触摸或依赖平台自动焦点。

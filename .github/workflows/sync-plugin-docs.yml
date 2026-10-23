@@ -51,16 +51,23 @@ jobs:
           path: .tmp/FlexStudioDocumentation
           token: ${{ secrets.FLEX_DOCS_PAT || github.token }}
 
+      - name: Checkout skill source template
+        uses: actions/checkout@v4
+        with:
+          repository: ENIAC-Tech/flex-plugin-template
+          path: .tmp/flex-plugin-template
+          token: ${{ secrets.FLEX_DOCS_PAT || github.token }}
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Sync bundled docs
-        run: node scripts/sync-plugin-skill-docs.mjs --docs-root .tmp/FlexStudioDocumentation/docs/zh/sdk/plugin-development
+        run: node scripts/sync-plugin-skill-docs.mjs --template-root .tmp/flex-plugin-template --docs-root .tmp/FlexStudioDocumentation/docs/zh/sdk/plugin-development
 
       - name: Verify generated docs
-        run: node scripts/sync-plugin-skill-docs.mjs --docs-root .tmp/FlexStudioDocumentation/docs/zh/sdk/plugin-development --check
+        run: node scripts/sync-plugin-skill-docs.mjs --template-root .tmp/flex-plugin-template --docs-root .tmp/FlexStudioDocumentation/docs/zh/sdk/plugin-development --check
 
       - name: Open sync pull request
         uses: peter-evans/create-pull-request@v6

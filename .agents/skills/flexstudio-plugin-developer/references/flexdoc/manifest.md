@@ -32,9 +32,13 @@
   "minHostVersion": "2.0.0",
   "native": false,
   "platforms": ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64"],
-  "devices": ["Flexbar"],
+  "requiresNetwork": true,
+  "runtime": {
+    "startupTimeoutMs": 15000
+  },
+  "devices": ["Flow2Pro"],
   "requiredCapabilities": ["encoder", "touchscreen"],
-  "permissions": ["store", "logger", "definitions", "unit", "ui"],
+  "permissions": ["store", "logger", "definitions", "unit", "ui", "http", "jobs"],
   "dependencies": [
     {
       "uuid": "@acme/base-plugin",
@@ -59,6 +63,10 @@
 
 ## 字段参考
 
+Dependency State Channel 不新增 manifest 字段或 permission enum。订阅其他插件状态的 Consumer 复用 `pluginApi`，并必须在 `dependencies` 中声明 Provider 为直接依赖；只注册或发布状态的 Provider 不需要新增权限。
+
+Renderer State Channel 同样不新增 manifest 字段或 permission enum。Provider 注册/发布沿用当前 `pluginApi` permission rule；订阅仅授权给同一插件的 Host 认证 renderer session，因此无需也不得在 manifest、订阅参数或 payload 中声明 plugin UUID/session identity。它不要求 `dependencies`。
+
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `schemaVersion` | `'1.0'` | 是 | manifest schema 版本。当前使用 `1.0`。 |
@@ -69,7 +77,9 @@
 | `author` | `PluginAuthor` | 否 | 插件作者信息。 |
 | `minHostVersion` | `string` | 否 | 最低 FlexStudio 版本要求。 |
 | `native` | `boolean` | 否 | 是否包含平台相关 native 能力。native 插件必须按平台构建和打包。 |
-| `platforms` | `PluginPlatform[]` | 否 | 支持的平台。也兼容旧的 `win32`、`darwin`、`linux` 写法。 |
+| `platforms` | `PluginPlatform[]` | 否 | 支持的平台。当前文档与校验器都使用 `win32-x64`、`darwin-arm64`、`darwin-x64`、`linux-x64`。 |
+| `requiresNetwork` | `boolean` | 否 | 是否会访问互联网或局域网。需要联网的插件应设置为 `true`，市场的网络徽标只基于这个字段。 |
+| `runtime` | `PluginRuntimeManifest` | 否 | 后端运行时元数据，例如启动超时和预期内存占用。 |
 | `devices` | `string[]` | 否 | 支持的设备型号。 |
 | `requiredCapabilities` | `DeviceCapability[]` | 否 | 运行时要求的设备能力。 |
 | `permissions` | `PluginPermission[]` | 否 | 插件需要的宿主权限。 |
@@ -99,7 +109,7 @@ UUID 应长期稳定。发布后修改 UUID 会被视为一个新插件。
 
 ## 版本规则
 
-manifest 不包含 `version` 字段。插件市场版本来自 GitHub Release tag。
+manifest 不包含 `version` 字段。本地插件安装时，FlexStudio 使用插件包内 `package.json` 的 `version` 作为插件版本。通过插件市场安装时，优先使用 GitHub Release tag 版本；如果没有 Release/tag 版本，才回退到 `package.json` 的 `version`。
 
 建议使用语义化版本 tag：
 
@@ -108,6 +118,8 @@ v1.0.0
 v1.1.0
 v2.0.0
 ```
+
+发布 CI 会在构建前校验规范化后的 Release tag 版本与 `package.json` 的 `version` 是否一致。`v1.2.0` 会规范化为 `1.2.0`；二者不一致时发布失败。
 
 插件依赖中的 `minVersion` 也应使用可比较的版本号。
 
@@ -148,6 +160,46 @@ interface PluginEntryPoints {
 
 非 native 插件通常可以声明全部平台，并打包为 universal 包。native 插件必须为每个平台分别构建 `.flexplugin` 包。
 
+`native` 和 `platforms` 只描述插件包的交付形态与宿主兼容性，不负责实现系统自动化逻辑。需要原生能力、桌面集成或系统自动化时，业务逻辑应写在插件自己的后端代码或 native helper 中；FlexStudio core 只提供插件生命周期、权限校验、运行时 API 和市场兼容性标记。
+
+## 网络元数据
+
+`requiresNetwork` 用于声明插件是否会访问互联网或局域网。只要插件会主动访问远端 API、LAN 服务、路由器、本机其他服务，或建立 WebSocket 长连接，就应设置：
+
+```json
+{
+  "requiresNetwork": true
+}
+```
+
+注意：
+
+- `requiresNetwork` 是市场和宿主展示的元数据，不会替代权限控制。
+- 真正的 Host API 能力仍由 `permissions` 决定；HTTP/HTTPS 需要 `http`，WebSocket 需要 `websocket`。
+- 市场网络徽标只基于 `requiresNetwork`，不会根据 `http` / `websocket` 自动推断。
+- 纯本地插件应保持缺省或显式写为 `false`，避免误导用户。
+
+## 运行时元数据
+
+`runtime` 是可选对象，用于描述插件后端进程的启动和资源预期：
+
+```ts
+interface PluginRuntimeManifest {
+  startupTimeoutMs?: number
+  expectedIdleMemoryMb?: number
+  expectedActiveMemoryMb?: number
+  backgroundService?: boolean
+}
+```
+
+当前建议重点使用 `runtime.startupTimeoutMs`。它表示插件后端从进程启动到完成 `onLoad()` 的期望窗口。FlexCLI 会接受任意数字，但对超出文档范围的值给出警告；当前文档范围是 `1000-120000` ms，FlexStudio 会对实际值做 clamp。
+
+建议：
+
+- 默认先保持不写，只有确实存在可解释的慢启动需求时再声明。
+- 不要把网络同步、全量索引或大文件扫描塞进启动阶段来“配合”更大的超时；应让 `onLoad()` 尽快完成，再把慢任务放到后台 job。
+- `expectedIdleMemoryMb`、`expectedActiveMemoryMb` 和 `backgroundService` 主要用于补充宿主对插件运行形态的认知，不能替代你自己的内存管理和任务调度。
+
 ## 设备能力
 
 当前设备能力枚举：
@@ -175,6 +227,7 @@ interface PluginEntryPoints {
 | `logger` | 插件日志。 |
 | `device` | 设备配置和设备能力查询。 |
 | `definitions` | 注册插件 Library 与 Unit 定义。 |
+| `input` | 注册并接收输入功能、发布当前绑定反馈与功能可用状态；详见[输入功能](./input-functions.md)。 |
 | `bus` | 订阅或取消订阅宿主事件总线。 |
 | `unit` | Unit 事件订阅、Canvas 推帧等 Unit 能力。 |
 | `chart` | 注册并发布插件自定义 Chart 性能/传感器数据源，供内置 Chart Unit 选择和显示。 |
@@ -186,7 +239,11 @@ interface PluginEntryPoints {
 | 权限 | 说明 |
 | --- | --- |
 | `file` | 文件系统读写、目录操作和删除。 |
-| `http` | HTTP 请求。 |
+| `http` | 可通过 `hostApi.http.get` 和通用 `hostApi.http.request` 发起 HTTP/HTTPS 请求。 |
+| `websocket` | 敏感权限，可通过 `hostApi.ws.connect` 打开长连接 WebSocket。 |
+| `secrets` | 插件级敏感凭据存储。适合 access token、refresh token、API key。 |
+| `oauth` | 宿主协助完成 loopback OAuth 授权阶段。token exchange 和持久化仍由插件负责。 |
+| `jobs` | 创建和更新宿主拥有的后台任务记录，用于长时同步、扫描或导入。 |
 | `system` | 系统平台、CPU、内存和应用版本信息。 |
 | `project` | 项目相关能力。 |
 | `resource` | 资源库相关能力。 |
